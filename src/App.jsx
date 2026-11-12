@@ -474,7 +474,7 @@ export default function App() {
 
   // 2. Contador de Tiempo (cada 60s) y Estado en Línea
   useEffect(() => {
-    if (!firebaseConfigured || !currentUser?.uid || isAdmin) return;
+    if (!firebaseConfigured || !currentUser?.uid || currentUser.isGuest || isAdmin) return;
 
     const interval = setInterval(() => {
       if (document.visibilityState === 'visible') {
@@ -493,11 +493,11 @@ export default function App() {
       clearInterval(interval);
       window.removeEventListener('beforeunload', handleUnload);
     };
-  }, [currentUser?.uid, isAdmin]);
+  }, [currentUser?.uid, currentUser?.isGuest, isAdmin]);
 
   // 3. Ranking Top Grupo en Tiempo Real
   useEffect(() => {
-    if (!firebaseConfigured || !showTopGroup || !currentUser?.grupo) return;
+    if (!firebaseConfigured || !showTopGroup || !currentUser?.grupo || currentUser?.isGuest) return;
     const q = query(
       collection(db, 'usuarios'),
       where('grupo', '==', Number(currentUser.grupo)),
@@ -513,7 +513,7 @@ export default function App() {
       console.error(err);
     });
     return () => unsub();
-  }, [showTopGroup, currentUser?.grupo]);
+  }, [showTopGroup, currentUser?.grupo, currentUser?.isGuest]);
 
   // 4. Panel de Administrador en Tiempo Real
   useEffect(() => {
@@ -533,6 +533,16 @@ export default function App() {
 
   // Función Segura de Puntos (con transacción anti-duplicados)
   const addPointsToUser = async (pointsToAdd, gameId = null) => {
+    if (currentUser?.isGuest) {
+      if (gameId && currentUser.juegosJugados?.includes(gameId)) return false;
+      setCurrentUser(prev => ({
+        ...prev,
+        puntos: (prev.puntos || 0) + pointsToAdd,
+        juegosJugados: gameId ? Array.from(new Set([...(prev.juegosJugados || []), gameId])) : prev.juegosJugados
+      }));
+      return true;
+    }
+
     if (!firebaseConfigured || !currentUser?.uid || isAdmin) return false;
     if (gameId && currentUser.juegosJugados?.includes(gameId)) return false;
 
@@ -572,10 +582,34 @@ export default function App() {
 
   // Registrar intento de Carrera
   const registerAttempt = async () => {
+    if (currentUser?.isGuest) return;
     if (!firebaseConfigured || !currentUser?.uid || isAdmin) return;
     updateDoc(doc(db, 'usuarios', currentUser.uid), {
       intentosCarrera: increment(1)
     }).catch(() => {});
+  };
+
+  // Entrar como Invitado (sin guardar progreso en base de datos)
+  const handleGuestLogin = () => {
+    setCurrentUser({
+      nombre: 'Invitado',
+      correo: 'invitado@local',
+      grupo: null,
+      puntos: 0,
+      juegosJugados: [],
+      intentosCarrera: 0,
+      intentosParejas: 0,
+      isGuest: true
+    });
+    setAttempts(0);
+    setPairsAttempts(0);
+    setAuthError('');
+    setHuertoStep(0);
+    setHuertoSelections({});
+    setPairsState('start');
+    setFoodTruckStep(0);
+    setFoodTruckSelections({});
+    setSafeState('start');
   };
 
   // Inicio de Sesión / Registro Firebase
@@ -619,7 +653,7 @@ export default function App() {
 
   // Cerrar Sesión
   const handleLogout = async () => {
-    if (firebaseConfigured && currentUser?.uid) {
+    if (!currentUser?.isGuest && firebaseConfigured && currentUser?.uid) {
       await updateDoc(doc(db, 'usuarios', currentUser.uid), { enLinea: false }).catch(() => {});
       await signOut(auth).catch(() => {});
     }
@@ -787,7 +821,7 @@ export default function App() {
     setPairsState('finished');
 
     if (pairsAttempts === 0) addPointsToUser(correctCount * 2, 'parejas');
-    if (currentUser?.uid && db) {
+    if (!currentUser?.isGuest && currentUser?.uid && db) {
       updateDoc(doc(db, 'usuarios', currentUser.uid), { intentosParejas: increment(1) })
         .then(() => setCurrentUser(previous => ({ ...previous, intentosParejas: (previous?.intentosParejas || 0) + 1 })))
         .catch(error => console.error('Error registrando intento de parejas:', error));
@@ -1181,6 +1215,26 @@ if (!currentUser && !isAdmin) {
             {isRegistering ? '¿Ya tienes cuenta? Inicia sesión aquí' : '¿Primera vez? Regístrate aquí'}
           </button>
 
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white px-3 text-slate-400 font-semibold">o también</span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGuestLogin}
+            className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-3.5 rounded-xl border border-slate-300 transition-all text-base shadow-sm hover:shadow"
+          >
+            Entrar como Invitado (Modo Práctica)
+          </button>
+          <p className="text-xs text-slate-400 mt-2">
+            No requiere cuenta y tu progreso no se guardará en la base de datos.
+          </p>
+
           <div className="mt-8 pt-6 border-t border-slate-100">
             <button
               onClick={() => setShowAdminLogin(!showAdminLogin)}
@@ -1344,12 +1398,14 @@ if (!currentUser && !isAdmin) {
       {/* Encabezado */}
       <header className="bg-gradient-to-br from-blue-800 via-indigo-900 to-purple-900 text-white py-14 px-6 text-center shadow-2xl relative overflow-hidden">
         {/* Botón Top del Grupo arriba a la izquierda */}
-        <button
-          onClick={() => setShowTopGroup(true)}
-          className="absolute top-4 left-4 z-20 flex items-center gap-2 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold px-4 py-2 rounded-full text-sm shadow-lg transition-all hover:scale-105"
-        >
-          <Trophy size={16} /> Top Grupo {currentUser?.grupo}
-        </button>
+        {!currentUser?.isGuest && (
+          <button
+            onClick={() => setShowTopGroup(true)}
+            className="absolute top-4 left-4 z-20 flex items-center gap-2 bg-amber-400 hover:bg-amber-300 text-indigo-950 font-extrabold px-4 py-2 rounded-full text-sm shadow-lg transition-all hover:scale-105"
+          >
+            <Trophy size={16} /> Top Grupo {currentUser?.grupo}
+          </button>
+        )}
 
         <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, #ffffff 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
         <h1 className="text-4xl md:text-6xl font-extrabold mb-6 tracking-tight relative z-10 drop-shadow-lg">
@@ -1360,7 +1416,10 @@ if (!currentUser && !isAdmin) {
         </p>
         <div className="relative z-10 mt-6 flex flex-wrap items-center justify-center gap-3">
           <div className="flex items-center gap-3 bg-white/10 backdrop-blur-md px-4 py-2 rounded-full border border-white/20">
-            <span className="font-bold text-white flex items-center gap-2"><UserRound size={16} /> {currentUser?.nombre}</span>
+            <span className="font-bold text-white flex items-center gap-2">
+              <UserRound size={16} /> {currentUser?.nombre}
+              {currentUser?.isGuest && <span className="text-xs bg-slate-700/60 px-2 py-0.5 rounded-full text-slate-200 font-normal">Modo Invitado</span>}
+            </span>
             <span className="bg-amber-400 text-indigo-950 font-black px-3 py-1 rounded-full text-sm">{currentUser?.puntos || 0} pts</span>
           </div>
           <button onClick={handleLogout} className="text-xs text-indigo-200 hover:text-white underline font-semibold flex items-center gap-1">
